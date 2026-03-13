@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	_ "modernc.org/sqlite"
 )
 
 var (
@@ -25,11 +25,10 @@ func getTestParcel() Parcel {
 }
 
 func TestAddGetDelete(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := sql.Open("sqlite", "tracker.db")
 	require.NoError(t, err)
 	defer db.Close()
 
-	require.NoError(t, InitDB(db))
 	store := NewParcelStore(db)
 	parcel := getTestParcel()
 
@@ -37,76 +36,95 @@ func TestAddGetDelete(t *testing.T) {
 	require.NoError(t, err)
 	require.NotZero(t, id)
 
-	t.Cleanup(func() {
-		err := store.Delete(id)
-		require.NoError(t, err)
-	})
-
-	got, err := store.Get(id)
+	stored, err := store.Get(id)
 	require.NoError(t, err)
-	require.Equal(t, parcel.Client, got.Client)
-	require.Equal(t, parcel.Address, got.Address)
-	require.Equal(t, parcel.Status, got.Status)
+	assert.Equal(t, parcel.Client, stored.Client)
+	assert.Equal(t, parcel.Status, stored.Status)
+	assert.Equal(t, parcel.Address, stored.Address)
+
+	err = store.Delete(id)
+	require.NoError(t, err)
+
+	_, err = store.Get(id)
+	assert.ErrorIs(t, err, sql.ErrNoRows)
 }
 
-func TestSetAddressAndStatus(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
+func TestSetAddress(t *testing.T) {
+	db, err := sql.Open("sqlite", "tracker.db")
 	require.NoError(t, err)
 	defer db.Close()
 
-	require.NoError(t, InitDB(db))
 	store := NewParcelStore(db)
 	parcel := getTestParcel()
 
 	id, err := store.Add(parcel)
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, store.Delete(id)) })
 
-	newAddress := "new address"
-	require.NoError(t, store.SetAddress(id, newAddress))
-
-	newStatus := ParcelStatusSent
-	require.NoError(t, store.SetStatus(id, newStatus))
+	newAddress := "new test address"
+	err = store.SetAddress(id, newAddress)
+	require.NoError(t, err)
 
 	got, err := store.Get(id)
 	require.NoError(t, err)
-	require.Equal(t, newAddress, got.Address)
-	require.Equal(t, newStatus, got.Status)
+	assert.Equal(t, newAddress, got.Address)
 }
 
-func TestGetByClient(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
+func TestSetStatus(t *testing.T) {
+	db, err := sql.Open("sqlite", "tracker.db")
 	require.NoError(t, err)
 	defer db.Close()
 
-	require.NoError(t, InitDB(db))
 	store := NewParcelStore(db)
-	client := randRange.Intn(10_000_000)
+	parcel := getTestParcel()
 
-	parcels := []Parcel{getTestParcel(), getTestParcel(), getTestParcel()}
+	id, err := store.Add(parcel)
+	require.NoError(t, err)
+
+	newStatus := "sent"
+	err = store.SetStatus(id, newStatus)
+	require.NoError(t, err)
+
+	stored, err := store.Get(id)
+	require.NoError(t, err)
+	assert.Equal(t, newStatus, stored.Status)
+}
+
+func TestGetByClient(t *testing.T) {
+	db, err := sql.Open("sqlite", "tracker.db")
+	require.NoError(t, err)
+	defer db.Close()
+
+	store := NewParcelStore(db)
+	parcels := []Parcel{
+		getTestParcel(),
+		getTestParcel(),
+		getTestParcel(),
+	}
 	parcelMap := map[int]Parcel{}
 
-	for i := range parcels {
+	client := randRange.Intn(10_000_000)
+	for i := 0; i < len(parcels); i++ {
 		parcels[i].Client = client
+	}
+
+	for i := 0; i < len(parcels); i++ {
 		id, err := store.Add(parcels[i])
 		require.NoError(t, err)
+		require.NotZero(t, id)
 		parcels[i].Number = id
 		parcelMap[id] = parcels[i]
-
-		t.Cleanup(func(id int) func() {
-			return func() { require.NoError(t, store.Delete(id)) }
-		}(id))
 	}
 
 	storedParcels, err := store.GetByClient(client)
 	require.NoError(t, err)
-	require.Len(t, storedParcels, len(parcels))
+	assert.Len(t, storedParcels, len(parcels))
 
 	for _, p := range storedParcels {
 		orig, ok := parcelMap[p.Number]
-		require.True(t, ok)
-		require.Equal(t, orig.Client, p.Client)
-		require.Equal(t, orig.Address, p.Address)
-		require.Equal(t, orig.Status, p.Status)
+		assert.True(t, ok, "посылка с ID %d не найдена в map", p.Number)
+		assert.Equal(t, orig.Client, p.Client)
+		assert.Equal(t, orig.Status, p.Status)
+		assert.Equal(t, orig.Address, p.Address)
+		assert.Equal(t, orig.CreatedAt, p.CreatedAt)
 	}
 }
